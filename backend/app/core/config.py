@@ -1,5 +1,5 @@
-from pydantic_settings import BaseSettings
 from typing import List
+from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "News Summarizer API"
@@ -16,7 +16,12 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
     # CORS
-    ALLOWED_ORIGINS: List[str] = ["http://localhost:3000"]
+    ALLOWED_ORIGINS: List[str] = [
+        "http://localhost:3000",     # React frontend
+        "http://localhost:8000",     # API documentation
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
+    ]
     
     # Default superuser
     FIRST_SUPERUSER_EMAIL: str
