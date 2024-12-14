@@ -3,82 +3,67 @@
 from datetime import datetime, timedelta
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-import asyncio
+from sqlalchemy import select, and_
 import logging
+import asyncio
 
 from app.models.prompt import Prompt
+from app.models.task import Task, TaskStatus, TaskType
 from app.models.news import NewsArticle
-from app.models.task import Task, TaskStatus
-from app.services.rss_service import RSSService
+from app.services.content_processor import ContentProcessor
 from app.services.llm_service import LLMService
 from app.services.image_service import ImageService
-from app.services.content_processor import ContentProcessor
-from app.utils.slug import generate_news_slug
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 class NewsGenerator:
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.rss_service = RSSService()
-        self.llm_service = LLMService()
-        self.image_service = ImageService()
-        self.content_processor = ContentProcessor()
+        self.content_processor = None
 
-    async def generate_news_for_prompt(self, prompt: Prompt) -> List[NewsArticle]:
-        """Generate news articles for a single prompt."""
+    async def initialize_services(self):
+        """Initialize required services."""
+        # Get default LLM config
+        llm_config = await self.db.scalar(
+            select(LLMConfig).where(LLMConfig.is_default == True)
+        )
+        if not llm_config:
+            raise ValueError("No default LLM configuration found")
+
+        # Get default image config
+        image_config = await self.db.scalar(
+            select(ImageConfig).where(ImageConfig.is_default == True)
+        )
+        if not image_config:
+            raise ValueError("No default image configuration found")
+
+        # Initialize services
+        llm_service = LLMService(llm_config)
+        image_service = ImageService(image_config)
+        self.content_processor = ContentProcessor(self.db, llm_service, image_service)
+
+    async def generate_news_for_prompt(
+        self,
+        prompt: Prompt,
+        task: Optional[Task] = None
+    ) -> NewsArticle:
+        """Generate news for a single prompt."""
         try:
-            # Fetch RSS feeds
-            raw_articles = await self.rss_service.fetch_feeds(prompt.news_sources)
-            
-            if not raw_articles:
-                logger.warning(f"No articles found for prompt {prompt.id}")
-                return []
+            if not self.content_processor:
+                await self.initialize_services()
 
-            # Process and aggregate content
-            processed_content = await self.content_processor.process_articles(raw_articles)
-            
-            # Generate news using LLM
-            llm_response = await self.llm_service.generate_news(
-                content=processed_content,
-                prompt_content=prompt.content,
-                template_content=prompt.template.template_content
+            article = await self.content_processor.process_prompt(
+                prompt=prompt,
+                task_id=task.id if task else None
             )
-            
-            # Generate image if required
-            image_url = None
-            if prompt.generate_image:
-                try:
-                    image_url = await self.image_service.generate_image(llm_response["title"])
-                except Exception as e:
-                    logger.error(f"Image generation failed for prompt {prompt.id}: {str(e)}")
-
-            # Create news article
-            news = NewsArticle(
-                title=llm_response["title"],
-                content=llm_response["content"],
-                summary=llm_response.get("summary"),
-                source_urls=[article["url"] for article in raw_articles],
-                image_url=image_url,
-                ai_metadata=llm_response.get("metadata"),
-                published_date=datetime.utcnow(),
-                prompt_id=prompt.id,
-                slug=await generate_news_slug(
-                    llm_response["title"],
-                    prompt.name,
-                    datetime.utcnow()
-                )
-            )
-            
-            self.db.add(news)
-            await self.db.commit()
-            await self.db.refresh(news)
-            
-            return news
+            return article
 
         except Exception as e:
             logger.error(f"Error generating news for prompt {prompt.id}: {str(e)}")
+            if task:
+                task.error_message = f"Failed to generate news: {str(e)}"
+                await self.db.commit()
             raise
 
     async def run_generation_task(self, task: Task) -> None:
@@ -86,32 +71,61 @@ class NewsGenerator:
         try:
             # Update task status
             task.update_status(TaskStatus.IN_PROGRESS)
+            task.started_at = datetime.utcnow()
             await self.db.commit()
 
             # Get active prompts
-            prompts_query = select(Prompt).where(Prompt.is_active == True)
-            result = await self.db.execute(prompts_query)
-            prompts = result.scalars().all()
+            prompts = await self.db.scalars(
+                select(Prompt)
+                .where(Prompt.is_active == True)
+                .where(and_(
+                    Prompt.last_run_at.is_(None) |
+                    (Prompt.last_run_at <= datetime.utcnow() - timedelta(hours=1))
+                ))
+            )
+            prompts = prompts.all()
 
-            generated_articles = []
-            
-            # Generate news for each prompt
+            if not prompts:
+                logger.info("No prompts to process")
+                task.update_status(
+                    TaskStatus.COMPLETED,
+                    result={"message": "No prompts to process"}
+                )
+                await self.db.commit()
+                return
+
+            # Process prompts
+            results = {
+                "successful": [],
+                "failed": [],
+                "total_prompts": len(prompts)
+            }
+
             for prompt in prompts:
                 try:
-                    article = await self.generate_news_for_prompt(prompt)
+                    article = await self.generate_news_for_prompt(prompt, task)
                     if article:
-                        generated_articles.append(article)
+                        results["successful"].append(str(article.id))
+                        
+                        # Update prompt's last run time
+                        prompt.last_run_at = datetime.utcnow()
+                        await self.db.commit()
                 except Exception as e:
-                    logger.error(f"Failed to generate news for prompt {prompt.id}: {str(e)}")
-                    continue
+                    logger.error(f"Failed to process prompt {prompt.id}: {str(e)}")
+                    results["failed"].append({
+                        "prompt_id": str(prompt.id),
+                        "error": str(e)
+                    })
 
-            # Update task status
+            # Update task completion
             task.update_status(
                 TaskStatus.COMPLETED,
                 result={
+                    "successful_count": len(results["successful"]),
+                    "failed_count": len(results["failed"]),
                     "total_prompts": len(prompts),
-                    "articles_generated": len(generated_articles),
-                    "completion_time": datetime.utcnow().isoformat()
+                    "completion_time": datetime.utcnow().isoformat(),
+                    "details": results
                 }
             )
             await self.db.commit()
@@ -122,3 +136,22 @@ class NewsGenerator:
             task.update_status(TaskStatus.FAILED, error=error_msg)
             await self.db.commit()
             raise
+
+    async def cleanup_old_articles(self, days: int = 30) -> None:
+        """Clean up old articles to prevent database bloat."""
+        try:
+            cutoff_date = datetime.utcnow() - timedelta(days=days)
+            old_articles = await self.db.scalars(
+                select(NewsArticle)
+                .where(NewsArticle.created_at < cutoff_date)
+            )
+            
+            for article in old_articles:
+                await self.db.delete(article)
+            
+            await self.db.commit()
+            logger.info(f"Cleaned up articles older than {days} days")
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up old articles: {str(e)}")
+            await self.db.rollback()

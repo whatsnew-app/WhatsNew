@@ -1,6 +1,7 @@
 # app/api/v1/endpoints/websocket.py
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from uuid import UUID
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 import json
@@ -24,7 +25,7 @@ class ConnectionManager:
     async def connect(
         self,
         websocket: WebSocket,
-        user: User | None = None
+        user: Optional[User] = None
     ):
         await websocket.accept()
         
@@ -41,7 +42,7 @@ class ConnectionManager:
                 self.active_connections["private"][user_id] = []
             self.active_connections["private"][user_id].append(websocket)
 
-    def disconnect(self, websocket: WebSocket, user: User | None = None):
+    def disconnect(self, websocket: WebSocket, user: Optional[User] = None):
         # Remove from public connections
         if websocket in self.active_connections["public"]:
             self.active_connections["public"].remove(websocket)
@@ -63,7 +64,7 @@ class ConnectionManager:
         self,
         news: NewsArticleResponse,
         prompt_type: PromptType,
-        user_id: UUID | None = None
+        user_id: Optional[UUID] = None
     ):
         """Broadcast news to appropriate connections based on type."""
         message = {
@@ -107,7 +108,7 @@ manager = ConnectionManager()
 @router.websocket("/news-updates")
 async def websocket_endpoint(
     websocket: WebSocket,
-    token: str | None = None,
+    token: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """WebSocket endpoint for real-time news updates."""
@@ -133,7 +134,7 @@ async def websocket_endpoint(
 async def broadcast_new_article(
     article: NewsArticleResponse,
     prompt_type: PromptType,
-    user_id: UUID | None = None
+    user_id: Optional[UUID] = None
 ):
     """Helper function to broadcast new articles."""
     await manager.broadcast_news(article, prompt_type, user_id)

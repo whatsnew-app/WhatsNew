@@ -1,3 +1,5 @@
+# app/models/user.py
+
 from uuid import UUID, uuid4
 from sqlalchemy import Column, String, Boolean, DateTime
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -17,5 +19,8 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Add relationship to Prompt
+    # Relationships
     prompts = relationship("Prompt", back_populates="user")
+    tasks = relationship("Task", back_populates="user", 
+                        foreign_keys="Task.created_by",
+                        cascade="all, delete-orphan")
