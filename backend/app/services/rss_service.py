@@ -1,90 +1,149 @@
+# app/services/rss_service.py
+
 from typing import List, Dict, Optional
-from datetime import datetime
 import feedparser
-import httpx
+import aiohttp
+from datetime import datetime
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
 from fastapi import HTTPException
+import asyncio
+from dateutil import parser
+import logging
+
+logger = logging.getLogger(__name__)
 
 class RSSService:
     def __init__(self):
-        self.client = httpx.AsyncClient(timeout=30.0)
-
-    async def fetch_feed(self, url: str) -> List[Dict]:
-        try:
-            response = await self.client.get(url)
-            feed = feedparser.parse(response.text)
-            
-            if feed.bozo:  # Feed parsing error
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid RSS feed: {url}"
-                )
-
-            articles = []
-            for entry in feed.entries:
-                article = {
-                    'title': entry.get('title', ''),
-                    'link': entry.get('link', ''),
-                    'published': self._parse_date(entry.get('published', '')),
-                    'summary': entry.get('summary', ''),
-                    'content': self._get_content(entry),
-                    'source_url': url
-                }
-                articles.append(article)
-            
-            return articles
-
-        except httpx.RequestError as e:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Error fetching RSS feed: {str(e)}"
-            )
-
-    async def fetch_content(self, url: str) -> str:
-        """Fetch full article content from URL"""
-        try:
-            response = await self.client.get(url)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Remove unwanted elements
-            for element in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'iframe']):
-                element.decompose()
-            
-            # Find main content (customize based on common website structures)
-            content = soup.find('article') or soup.find(class_=['content', 'article', 'post'])
-            
-            if content:
-                return content.get_text(separator='\n', strip=True)
-            return soup.get_text(separator='\n', strip=True)
-
-        except httpx.RequestError as e:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Error fetching article content: {str(e)}"
-            )
-
-    def _parse_date(self, date_str: str) -> Optional[datetime]:
-        """Parse various date formats to datetime"""
-        if not date_str:
-            return None
-            
-        try:
-            return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-        except (ValueError, AttributeError):
-            try:
-                return datetime.strptime(date_str, '%a, %d %b %Y %H:%M:%S %z')
-            except ValueError:
-                return datetime.utcnow()
-
-    def _get_content(self, entry) -> str:
-        """Extract content from feed entry"""
-        if hasattr(entry, 'content'):
-            return entry.content[0].value
-        return entry.get('summary', '')
+        self.session = None
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (News Summarizer Bot)"
+        }
 
     async def __aenter__(self):
+        self.session = aiohttp.ClientSession(headers=self.headers)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.client.aclose()
+        if self.session:
+            await self.session.close()
+
+    async def fetch_feeds(self, urls: List[str]) -> List[Dict]:
+        """Fetch multiple RSS feeds concurrently."""
+        if not self.session:
+            self.session = aiohttp.ClientSession(headers=self.headers)
+
+        tasks = [self.fetch_feed(url) for url in urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        all_articles = []
+        for url, result in zip(urls, results):
+            if isinstance(result, Exception):
+                logger.error(f"Error fetching {url}: {str(result)}")
+                continue
+            all_articles.extend(result)
+        
+        return all_articles
+
+    async def fetch_feed(self, url: str) -> List[Dict]:
+        """Fetch and parse a single RSS feed."""
+        try:
+            async with self.session.get(url, timeout=30) as response:
+                if response.status != 200:
+                    raise HTTPException(
+                        status_code=response.status,
+                        detail=f"Failed to fetch RSS feed: {url}"
+                    )
+                
+                content = await response.text()
+                feed = feedparser.parse(content)
+                
+                articles = []
+                for entry in feed.entries:
+                    article = await self._parse_entry(entry, url)
+                    if article:
+                        articles.append(article)
+                
+                return articles
+
+        except Exception as e:
+            logger.error(f"Error processing feed {url}: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error processing feed: {str(e)}"
+            )
+
+    async def fetch_content(self, url: str) -> str:
+        """Fetch full article content from URL."""
+        try:
+            async with self.session.get(url, timeout=30) as response:
+                if response.status != 200:
+                    return None
+                
+                html = await response.text()
+                content = self._extract_article_content(html)
+                return content
+
+        except Exception as e:
+            logger.error(f"Error fetching content from {url}: {str(e)}")
+            return None
+
+    def _extract_article_content(self, html: str) -> str:
+        """Extract main article content from HTML."""
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # Remove unwanted elements
+        for element in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+            element.decompose()
+        
+        # Try common article content selectors
+        content_selectors = [
+            "article",
+            '[role="main"]',
+            '.post-content',
+            '.article-content',
+            '.entry-content',
+            '#main-content'
+        ]
+        
+        for selector in content_selectors:
+            content = soup.select_one(selector)
+            if content:
+                return content.get_text(separator='\n', strip=True)
+        
+        # Fallback to body content
+        return soup.body.get_text(separator='\n', strip=True) if soup.body else ""
+
+    async def _parse_entry(self, entry, feed_url: str) -> Optional[Dict]:
+        """Parse a feed entry into a standardized format."""
+        try:
+            # Parse publication date
+            published = None
+            if hasattr(entry, 'published'):
+                published = parser.parse(entry.published)
+            elif hasattr(entry, 'updated'):
+                published = parser.parse(entry.updated)
+            
+            # Get content
+            content = ""
+            if hasattr(entry, 'content'):
+                content = entry.content[0].value
+            elif hasattr(entry, 'summary'):
+                content = entry.summary
+            
+            # Clean content
+            if content:
+                content = BeautifulSoup(content, 'html.parser').get_text(separator='\n', strip=True)
+            
+            return {
+                'title': entry.title,
+                'link': entry.link,
+                'content': content,
+                'published': published,
+                'source_url': feed_url,
+                'author': getattr(entry, 'author', None),
+                'tags': [tag.term for tag in getattr(entry, 'tags', [])],
+            }
+
+        except Exception as e:
+            logger.error(f"Error parsing entry from {feed_url}: {str(e)}")
+            return None

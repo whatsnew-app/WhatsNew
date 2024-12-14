@@ -1,87 +1,126 @@
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from datetime import datetime, date
-from uuid import UUID
+# app/api/v1/endpoints/news.py
 
-from app.api.deps import get_current_user, get_db
-from app.models.user import User
+from datetime import date, datetime
+from typing import List
+from uuid import UUID
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_db, get_current_active_user
 from app.models.news import NewsArticle
 from app.models.prompt import Prompt, PromptType
+from app.models.user import User
 from app.schemas.news import (
-    NewsArticle as NewsArticleSchema,
-    NewsArticleCreate,
-    NewsArticleUpdate
+    NewsArticleResponse,
+    NewsArticleList,
+    NewsDateResponse
 )
-from app.utils.slug import generate_news_slug
 
 router = APIRouter()
 
-@router.get("/public", response_model=List[NewsArticleSchema])
-async def get_public_news(
-    db: AsyncSession = Depends(get_db),
-    skip: int = 0,
-    limit: int = 20,
-    date: Optional[date] = None
-):
-    query = (
-        select(NewsArticle)
-        .join(Prompt)
-        .where(Prompt.type == PromptType.PUBLIC)
-    )
-    
-    if date:
-        query = query.where(NewsArticle.published_date.cast(date) == date)
-    
-    news = await db.scalars(
-        query.offset(skip).limit(limit)
-    )
-    return news.all()
-
-@router.get("/my", response_model=List[NewsArticleSchema])
+@router.get("/my", response_model=NewsArticleList)
 async def get_my_news(
-    db: AsyncSession = Depends(get_db),
     skip: int = 0,
     limit: int = 20,
-    current_user: User = Depends(get_current_user)
-):
+    date_filter: date | None = None,
+    prompt_id: UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> NewsArticleList:
+    """Get news articles from user's prompts."""
     query = (
         select(NewsArticle)
         .join(Prompt)
         .where(Prompt.user_id == current_user.id)
     )
     
-    news = await db.scalars(
-        query.offset(skip).limit(limit)
+    if date_filter:
+        query = query.where(NewsArticle.published_date.cast(date) == date_filter)
+    if prompt_id:
+        query = query.where(NewsArticle.prompt_id == prompt_id)
+    
+    # Get total count
+    total = await db.scalar(select(func.count()).from_stmt(query))
+    
+    # Add pagination
+    query = query.offset(skip).limit(limit)
+    result = await db.execute(query)
+    articles = result.scalars().all()
+    
+    return NewsArticleList(
+        items=articles,
+        total=total,
+        skip=skip,
+        limit=limit
     )
-    return news.all()
 
-@router.get("/{prompt_name}/{date}/{slug}", response_model=NewsArticleSchema)
-async def get_news_by_slug(
+@router.get("/private/{prompt_name}/{date}/{slug}", response_model=NewsArticleResponse)
+async def get_private_news(
     prompt_name: str,
-    date: date,
+    date_filter: date,
     slug: str,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user)
-):
-    query = (
+    current_user: User = Depends(get_current_active_user)
+) -> NewsArticle:
+    """Get a specific private news article."""
+    article = await db.scalar(
         select(NewsArticle)
         .join(Prompt)
         .where(
-            NewsArticle.slug == f"{prompt_name}/{date}/{slug}"
+            Prompt.name == prompt_name,
+            NewsArticle.published_date.cast(date) == date_filter,
+            NewsArticle.slug == slug,
+            Prompt.type == PromptType.PRIVATE
         )
     )
     
-    news = await db.scalar(query)
-    if not news:
-        raise HTTPException(status_code=404, detail="News article not found")
+    if not article:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Article not found"
+        )
     
-    # Check permissions
-    if news.prompt.type == PromptType.PRIVATE:
-        if not current_user or news.prompt.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Not enough permissions")
-    elif news.prompt.type == PromptType.INTERNAL and not current_user:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+    # Check ownership
+    if article.prompt.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this article"
+        )
     
-    return news
+    return article
+
+@router.get("/{date}/full", response_model=NewsDateResponse)
+async def get_full_news(
+    date_filter: date,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> NewsDateResponse:
+    """Get all accessible news for a specific date."""
+    # Build query for accessible news
+    query = (
+        select(NewsArticle)
+        .join(Prompt)
+        .where(NewsArticle.published_date.cast(date) == date_filter)
+        .where(
+            (Prompt.type == PromptType.PUBLIC) |
+            (Prompt.type == PromptType.INTERNAL) |
+            ((Prompt.type == PromptType.PRIVATE) & (Prompt.user_id == current_user.id))
+        )
+    )
+    
+    result = await db.execute(query)
+    articles = result.scalars().all()
+    
+    # Organize articles by type
+    public_news = [a for a in articles if a.prompt.type == PromptType.PUBLIC]
+    internal_news = [a for a in articles if a.prompt.type == PromptType.INTERNAL]
+    private_news = [a for a in articles if a.prompt.type == PromptType.PRIVATE]
+    
+    return NewsDateResponse(
+        date=date_filter,
+        public_news=public_news,
+        internal_news=internal_news,
+        private_news=private_news,
+        total_count=len(articles)
+    )
