@@ -1,10 +1,10 @@
-# app/main.py
+# main.py
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-import asyncio
 import logging
+from fastapi.openapi.utils import get_openapi
 
 from app.api.v1.router import api_router
 from app.core.config import settings
@@ -25,17 +25,11 @@ scheduler = None
 async def lifespan(app: FastAPI):
     # Startup
     global scheduler
-    
-    # Initialize task scheduler
     async for db in get_db():
         scheduler = TaskScheduler(db)
-        # Start scheduler in background task
-        asyncio.create_task(scheduler.start())
         break
-    
-    logger.info("Task scheduler initialized and started")
+    logger.info("Task scheduler initialized")
     yield
-    
     # Shutdown
     if scheduler:
         scheduler.stop()
@@ -45,7 +39,10 @@ app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
     description=settings.DESCRIPTION,
-    lifespan=lifespan
+    lifespan=lifespan,
+    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    docs_url=f"{settings.API_V1_STR}/docs",
+    redoc_url=f"{settings.API_V1_STR}/redoc",
 )
 
 # Configure CORS
@@ -60,6 +57,36 @@ app.add_middleware(
 # Include API router
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
+# Custom OpenAPI configuration
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    openapi_schema = get_openapi(
+        title=settings.PROJECT_NAME,
+        version=settings.VERSION,
+        description=settings.DESCRIPTION,
+        routes=app.routes,
+    )
+
+    # Update security schemes
+    openapi_schema["components"]["securitySchemes"] = {
+        "OAuth2PasswordBearer": {
+            "type": "oauth2",
+            "flows": {
+                "password": {
+                    "tokenUrl": f"{settings.API_V1_STR}/auth/login",
+                    "scopes": {}
+                }
+            }
+        }
+    }
+
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
 @app.get("/")
 async def root():
     """Root endpoint for health check."""
@@ -68,25 +95,3 @@ async def root():
         "version": settings.VERSION,
         "api_v1_url": settings.API_V1_STR
     }
-
-@app.on_event("startup")
-async def startup_event():
-    """Additional startup tasks."""
-    logger.info("Application starting up...")
-    # Additional startup tasks can be added here
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown."""
-    logger.info("Application shutting down...")
-    # Additional cleanup tasks can be added here
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )

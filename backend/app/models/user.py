@@ -5,6 +5,7 @@ from sqlalchemy import Column, String, Boolean, DateTime
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import relationship
 from datetime import datetime
+
 from app.core.database import Base
 
 class User(Base):
@@ -19,8 +20,5 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Relationships
+    # Define relationships without backref
     prompts = relationship("Prompt", back_populates="user")
-    tasks = relationship("Task", back_populates="user", 
-                        foreign_keys="Task.created_by",
-                        cascade="all, delete-orphan")
