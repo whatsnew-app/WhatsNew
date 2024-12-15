@@ -1,14 +1,14 @@
 # app/schemas/template.py
 
-from pydantic import BaseModel, ConfigDict
-from typing import Optional
-from uuid import UUID
+from typing import Optional, List
 from datetime import datetime
+from uuid import UUID
+from pydantic import BaseModel, ConfigDict
 
 class TemplateBase(BaseModel):
     name: str
     description: Optional[str] = None
-    content: str
+    template_content: str
     is_active: bool = True
 
 class TemplateCreate(TemplateBase):
@@ -17,7 +17,7 @@ class TemplateCreate(TemplateBase):
 class TemplateUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    content: Optional[str] = None
+    template_content: Optional[str] = None
     is_active: Optional[bool] = None
 
 class TemplateInDBBase(TemplateBase):
@@ -28,11 +28,18 @@ class TemplateInDBBase(TemplateBase):
     model_config = ConfigDict(from_attributes=True)
 
 class Template(TemplateInDBBase):
+    """Schema for template responses."""
     pass
 
 class TemplateResponse(TemplateInDBBase):
+    """Schema for template responses with additional metadata."""
     pass
 
 class TemplateList(BaseModel):
-    templates: list[TemplateResponse]
+    """Schema for paginated template list."""
+    items: List[TemplateResponse]
     total: int
+    skip: int
+    limit: int
+
+    model_config = ConfigDict(from_attributes=True)

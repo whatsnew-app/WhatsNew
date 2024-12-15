@@ -4,7 +4,7 @@ from typing import List
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.api.deps import get_db, get_current_superuser
 from app.models.prompt_template import PromptTemplate
@@ -18,6 +18,29 @@ from app.schemas.template import (
 
 router = APIRouter()
 
+@router.post(
+    "/admin/templates",
+    response_model=TemplateResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(get_current_superuser)]
+)
+async def create_template(
+    template: TemplateCreate,
+    db: AsyncSession = Depends(get_db)
+) -> PromptTemplate:
+    """Create a new prompt template."""
+    db_template = PromptTemplate(
+        name=template.name,
+        description=template.description,
+        template_content=template.template_content,  # Changed from content to template_content
+        is_active=template.is_active
+    )
+    
+    db.add(db_template)
+    await db.commit()
+    await db.refresh(db_template)
+    return db_template
+
 @router.get(
     "/admin/templates",
     response_model=List[TemplateResponse],
@@ -27,35 +50,14 @@ async def list_templates(
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = Depends(get_db)
-):
+) -> List[PromptTemplate]:
     """List all prompt templates."""
-    query = select(PromptTemplate).offset(skip).limit(limit)
-    result = await db.execute(query)
-    templates = result.scalars().all()
-    return templates
-
-@router.post(
-    "/admin/templates",
-    response_model=TemplateResponse,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(get_current_superuser)]
-)
-async def create_template(
-    template: TemplateCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_superuser)
-):
-    """Create a new prompt template."""
-    db_template = PromptTemplate(
-        name=template.name,
-        description=template.description,
-        template_content=template.content,
-        is_active=template.is_active
+    templates = await db.scalars(
+        select(PromptTemplate)
+        .offset(skip)
+        .limit(limit)
     )
-    db.add(db_template)
-    await db.commit()
-    await db.refresh(db_template)
-    return db_template
+    return templates.all()
 
 @router.get(
     "/admin/templates/{template_id}",
@@ -65,13 +67,10 @@ async def create_template(
 async def get_template(
     template_id: UUID,
     db: AsyncSession = Depends(get_db)
-):
+) -> PromptTemplate:
     """Get a specific prompt template."""
-    query = select(PromptTemplate).where(PromptTemplate.id == template_id)
-    result = await db.execute(query)
-    template = result.scalar_one_or_none()
-    
-    if template is None:
+    template = await db.get(PromptTemplate, template_id)
+    if not template:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Template not found"
@@ -85,28 +84,24 @@ async def get_template(
 )
 async def update_template(
     template_id: UUID,
-    template: TemplateUpdate,
+    template_update: TemplateUpdate,
     db: AsyncSession = Depends(get_db)
-):
+) -> PromptTemplate:
     """Update a prompt template."""
-    query = select(PromptTemplate).where(PromptTemplate.id == template_id)
-    result = await db.execute(query)
-    db_template = result.scalar_one_or_none()
-    
-    if db_template is None:
+    template = await db.get(PromptTemplate, template_id)
+    if not template:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Template not found"
         )
-    
-    # Update template fields
-    update_data = template.dict(exclude_unset=True)
+
+    update_data = template_update.dict(exclude_unset=True)
     for field, value in update_data.items():
-        setattr(db_template, field, value)
-    
+        setattr(template, field, value)
+
     await db.commit()
-    await db.refresh(db_template)
-    return db_template
+    await db.refresh(template)
+    return template
 
 @router.delete(
     "/admin/templates/{template_id}",
@@ -118,16 +113,12 @@ async def delete_template(
     db: AsyncSession = Depends(get_db)
 ):
     """Delete a prompt template."""
-    query = select(PromptTemplate).where(PromptTemplate.id == template_id)
-    result = await db.execute(query)
-    template = result.scalar_one_or_none()
-    
-    if template is None:
+    template = await db.get(PromptTemplate, template_id)
+    if not template:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Template not found"
         )
-    
+
     await db.delete(template)
     await db.commit()
-    return None

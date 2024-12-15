@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
 from fastapi.openapi.utils import get_openapi
+from fastapi.security import OAuth2PasswordBearer
 
 from app.api.v1.router import api_router
 from app.core.config import settings
@@ -18,46 +19,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Configure OAuth2 with the full path
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl=f"{settings.API_V1_STR}/auth/login",
+    scheme_name="OAuth2PasswordBearer"
+)
+
 # Global task scheduler instance
 scheduler = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     global scheduler
     async for db in get_db():
         scheduler = TaskScheduler(db)
         break
     logger.info("Task scheduler initialized")
     yield
-    # Shutdown
     if scheduler:
         scheduler.stop()
         logger.info("Task scheduler stopped")
 
-app = FastAPI(
-    title=settings.PROJECT_NAME,
-    version=settings.VERSION,
-    description=settings.DESCRIPTION,
-    lifespan=lifespan,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json",
-    docs_url=f"{settings.API_V1_STR}/docs",
-    redoc_url=f"{settings.API_V1_STR}/redoc",
-)
-
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Include API router
-app.include_router(api_router, prefix=settings.API_V1_STR)
-
-# Custom OpenAPI configuration
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -69,7 +51,7 @@ def custom_openapi():
         routes=app.routes,
     )
 
-    # Update security schemes
+    # Update the security schemes
     openapi_schema["components"]["securitySchemes"] = {
         "OAuth2PasswordBearer": {
             "type": "oauth2",
@@ -82,16 +64,54 @@ def custom_openapi():
         }
     }
 
+    # Add security globally
+    openapi_schema["security"] = [
+        {
+            "OAuth2PasswordBearer": []
+        }
+    ]
+
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    version=settings.VERSION,
+    description=settings.DESCRIPTION,
+    lifespan=lifespan,
+    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    docs_url=f"{settings.API_V1_STR}/docs",
+    redoc_url=f"{settings.API_V1_STR}/redoc",
+)
+
+# Set custom OpenAPI schema
 app.openapi = custom_openapi
 
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Root router for version check
 @app.get("/")
 async def root():
-    """Root endpoint for health check."""
     return {
         "status": "healthy",
         "version": settings.VERSION,
-        "api_v1_url": settings.API_V1_STR
+        "api_v1_url": settings.API_V1_STR,
+        "docs_url": f"{settings.API_V1_STR}/docs"
     }
+
+# Include API router with prefix
+app.include_router(
+    api_router,
+    prefix=settings.API_V1_STR
+)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.1", port=8000)
