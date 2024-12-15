@@ -39,6 +39,8 @@ class NewsGenerator:
         if not image_config:
             raise ValueError("No default image configuration found")
 
+        logger.info(f"Using LLM config: {llm_config.id} with API key: {llm_config.api_key[:8]}...")
+        
         # Initialize services
         llm_service = LLMService(llm_config)
         image_service = ImageService(image_config)
@@ -54,41 +56,47 @@ class NewsGenerator:
             if not self.content_processor:
                 await self.initialize_services()
 
+            # Create a local task variable if it doesn't exist
+            current_task = task
+            
             article = await self.content_processor.process_prompt(
                 prompt=prompt,
-                task_id=task.id if task else None
+                task_id=current_task.id if current_task else None
             )
             return article
 
         except Exception as e:
             error_msg = f"Error processing prompt {prompt.id}: {str(e)}"
             logger.error(error_msg)
-            if task:
-                task.error_message = error_msg
+            if current_task:  # Use the local variable here
+                current_task.error_message = error_msg
                 await self.db.commit()
             raise ValueError(error_msg)
 
     async def run_generation_task(self, task: Task) -> None:
         """Execute the news generation task."""
         try:
+            # Initialize services first
+            if not self.content_processor:
+                await self.initialize_services()
+
             # Update task status
             task.update_status(TaskStatus.IN_PROGRESS)
             task.started_at = datetime.utcnow()
             await self.db.commit()
 
-            # Get active prompts using a text literal for interval
-            prompts = await self.db.scalars(
-                select(Prompt)
-                .where(Prompt.is_active == True)
-                .where(
+            # Get active prompts
+            query = select(Prompt).where(
+                and_(
+                    Prompt.is_active == True,
                     or_(
                         Prompt.last_run_at.is_(None),
                         Prompt.last_run_at <= func.now() - text("interval '1 hour'")
                     )
                 )
             )
-            prompts = prompts.all()
-
+            result = await self.db.execute(query)
+            prompts = result.scalars().all()
 
             if not prompts:
                 logger.info("No prompts to process")
@@ -98,10 +106,6 @@ class NewsGenerator:
                 )
                 await self.db.commit()
                 return
-
-            # Initialize services if needed
-            if not self.content_processor:
-                await self.initialize_services()
 
             # Process prompts
             results = {
@@ -115,8 +119,6 @@ class NewsGenerator:
                     article = await self.generate_news_for_prompt(prompt, task)
                     if article:
                         results["successful"].append(str(article.id))
-                        
-                        # Update prompt's last run time using PostgreSQL's current time
                         prompt.last_run_at = func.now()
                         await self.db.commit()
                 except Exception as e:
@@ -126,6 +128,7 @@ class NewsGenerator:
                         "prompt_id": str(prompt.id),
                         "error": error_msg
                     })
+                    continue  # Continue with next prompt even if one fails
 
             # Update task completion
             completion_time = datetime.utcnow()
@@ -146,6 +149,7 @@ class NewsGenerator:
             logger.error(error_msg)
             task.update_status(TaskStatus.FAILED, error=error_msg)
             await self.db.commit()
+            
             raise
 
     async def cleanup_old_articles(self, days: int = 30) -> None:

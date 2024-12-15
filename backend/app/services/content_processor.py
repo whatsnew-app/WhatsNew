@@ -6,7 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 from uuid import UUID
 from sqlalchemy import func
-
+from sqlalchemy import select
+from app.models.prompt_template import PromptTemplate
 from app.services.source_aggregator import SourceAggregator
 from app.services.llm_service import LLMService
 from app.services.image_service import ImageService

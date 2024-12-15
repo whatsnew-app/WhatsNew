@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 class LLMService:
     def __init__(self, config: LLMConfig):
+        logger.info(f"Initializing LLM service with config id: {config.id}")
         self.config = config
-        self._setup_client()
 
     def _setup_client(self):
         """Initialize the appropriate LLM client based on provider"""

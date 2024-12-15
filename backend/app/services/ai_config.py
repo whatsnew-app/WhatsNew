@@ -28,9 +28,13 @@ class AIConfigService:
         )
         return result
 
-    async def create_llm_config(self, config_data: LLMConfigCreate) -> LLMConfigModel:
+    async def create_llm_config(self, config_data: LLMConfigCreate, user_id: UUID) -> LLMConfigModel:
         """Create a new LLM configuration"""
-        db_config = LLMConfigModel(**config_data.dict())
+        db_config = LLMConfigModel(
+            **config_data.dict(),
+            created_by=user_id,
+            updated_by=user_id  # Add this line
+        )
         self.db.add(db_config)
         await self.db.commit()
         await self.db.refresh(db_config)
