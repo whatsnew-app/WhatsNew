@@ -14,7 +14,8 @@ class SourceAggregator:
     ) -> List[Dict]:
         """Aggregate content from multiple RSS sources"""
         all_articles = []
-        cutoff_time = datetime.utcnow() - timedelta(hours=hours_back)
+        cutoff_time = datetime.utcnow().replace(tzinfo=None)  # Ensure naive datetime
+        cutoff_time = cutoff_time - timedelta(hours=hours_back)
 
         async with self.rss_service as service:
             for source_url in sources:
@@ -23,13 +24,19 @@ class SourceAggregator:
                     
                     # Filter articles by date and fetch full content
                     for article in articles:
-                        if article['published'] and article['published'] > cutoff_time:
-                            # Fetch full content if summary is too short
-                            if len(article['content']) < 500:
-                                article['content'] = await service.fetch_content(
-                                    article['link']
-                                )
-                            all_articles.append(article)
+                        pub_date = article['published']
+                        if pub_date:
+                            # Convert to naive datetime if it has timezone
+                            if pub_date.tzinfo:
+                                pub_date = pub_date.astimezone().replace(tzinfo=None)
+                            
+                            if pub_date > cutoff_time:
+                                # Fetch full content if summary is too short
+                                if len(article['content']) < 500:
+                                    article['content'] = await service.fetch_content(
+                                        article['link']
+                                    )
+                                all_articles.append(article)
 
                 except HTTPException as e:
                     # Log error but continue with other sources

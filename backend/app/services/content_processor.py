@@ -40,9 +40,18 @@ class ContentProcessor:
             # Get current time once
             current_time = datetime.utcnow().replace(tzinfo=None)
 
+            # Load template explicitly
+            template = await self.db.scalar(
+                select(PromptTemplate).where(PromptTemplate.id == prompt.template_id)
+            )
+            if not template:
+                raise ValueError(f"Template {prompt.template_id} not found")
+
             # Update task status if provided
             if task_id:
-                task = await self.db.get(Task, task_id)
+                task = await self.db.scalar(
+                    select(Task).where(Task.id == task_id)
+                )
                 if task:
                     task.status = TaskStatus.IN_PROGRESS
                     await self.db.commit()
@@ -56,11 +65,11 @@ class ContentProcessor:
                 logger.warning(f"No articles found for prompt {prompt.id}")
                 return None
 
-            # Generate content using LLM
+            # Generate content using LLM with explicitly loaded template
             content_result = await self.llm_service.generate_content(
                 articles,
                 prompt.content,
-                prompt.template.template_content
+                template.template_content  # Use explicitly loaded template
             )
 
             # Generate slug
