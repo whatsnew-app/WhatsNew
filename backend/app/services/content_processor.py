@@ -5,12 +5,13 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 from uuid import UUID
+from sqlalchemy import func
 
 from app.services.source_aggregator import SourceAggregator
 from app.services.llm_service import LLMService
 from app.services.image_service import ImageService
 from app.models.news import NewsArticle
-from app.models.prompt import Prompt
+from app.models.prompt import Prompt, PromptType
 from app.models.task import Task, TaskStatus
 from app.utils.slug import generate_news_slug
 from app.api.v1.endpoints.websocket import broadcast_new_article
@@ -36,6 +37,9 @@ class ContentProcessor:
     ) -> NewsArticle:
         """Process a prompt and create a news article with task tracking."""
         try:
+            # Get current time once
+            current_time = datetime.utcnow().replace(tzinfo=None)
+
             # Update task status if provided
             if task_id:
                 task = await self.db.get(Task, task_id)
@@ -63,7 +67,7 @@ class ContentProcessor:
             slug = await generate_news_slug(
                 content_result['title'],
                 prompt.name,
-                datetime.utcnow()
+                current_time
             )
 
             # Create news article
@@ -74,11 +78,11 @@ class ContentProcessor:
                 slug=slug,
                 source_urls=[a['link'] for a in articles],
                 prompt_id=prompt.id,
-                published_date=datetime.utcnow(),
+                published_date=current_time,
                 ai_metadata={
                     **content_result['metadata'],
                     'task_id': str(task_id) if task_id else None,
-                    'processing_time': datetime.utcnow().isoformat()
+                    'processing_time': current_time.isoformat()
                 }
             )
 
@@ -95,6 +99,10 @@ class ContentProcessor:
                     news.ai_metadata['image_error'] = str(e)
 
             self.db.add(news)
+            
+            # Update prompt's last run time
+            prompt.last_run_at = current_time
+            
             await self.db.commit()
             await self.db.refresh(news)
             
@@ -110,7 +118,7 @@ class ContentProcessor:
                 task.status = TaskStatus.COMPLETED
                 task.result = {
                     'article_id': str(news.id),
-                    'completion_time': datetime.utcnow().isoformat()
+                    'completion_time': current_time.isoformat()
                 }
                 await self.db.commit()
             

@@ -31,6 +31,8 @@ class Prompt(Base):
     news_sources = Column(ARRAY(String), nullable=False)
     template_id = Column(PGUUID, ForeignKey("prompt_templates.id"), nullable=False)
     user_id = Column(PGUUID, ForeignKey("users.id"), nullable=False)
+    is_active = Column(Boolean, default=True)
+    last_run_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

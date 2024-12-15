@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from sqlalchemy import func, select
 from app.api.deps import get_db, get_current_active_user
 from app.models.news import NewsArticle
 from app.models.prompt import Prompt, PromptType
@@ -29,22 +29,29 @@ async def get_my_news(
     current_user: User = Depends(get_current_active_user)
 ) -> NewsArticleList:
     """Get news articles from user's prompts."""
-    query = (
+    # Build base query
+    base_query = (
         select(NewsArticle)
         .join(Prompt)
         .where(Prompt.user_id == current_user.id)
     )
     
     if date_filter:
-        query = query.where(NewsArticle.published_date.cast(date) == date_filter)
+        base_query = base_query.where(NewsArticle.published_date.cast(date) == date_filter)
     if prompt_id:
-        query = query.where(NewsArticle.prompt_id == prompt_id)
+        base_query = base_query.where(NewsArticle.prompt_id == prompt_id)
     
     # Get total count
-    total = await db.scalar(select(func.count()).from_stmt(query))
+    count_query = select(func.count()).select_from(NewsArticle).join(Prompt).where(Prompt.user_id == current_user.id)
+    if date_filter:
+        count_query = count_query.where(NewsArticle.published_date.cast(date) == date_filter)
+    if prompt_id:
+        count_query = count_query.where(NewsArticle.prompt_id == prompt_id)
+    
+    total = await db.scalar(count_query)
     
     # Add pagination
-    query = query.offset(skip).limit(limit)
+    query = base_query.offset(skip).limit(limit)
     result = await db.execute(query)
     articles = result.scalars().all()
     

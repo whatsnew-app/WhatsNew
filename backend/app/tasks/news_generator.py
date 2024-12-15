@@ -3,10 +3,11 @@
 from datetime import datetime, timedelta
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_, func
+from sqlalchemy import text
 import logging
 import asyncio
-
+from app.models.ai_config import LLMConfig, ImageConfig
 from app.models.prompt import Prompt
 from app.models.task import Task, TaskStatus, TaskType
 from app.models.news import NewsArticle
@@ -60,11 +61,12 @@ class NewsGenerator:
             return article
 
         except Exception as e:
-            logger.error(f"Error generating news for prompt {prompt.id}: {str(e)}")
+            error_msg = f"Error processing prompt {prompt.id}: {str(e)}"
+            logger.error(error_msg)
             if task:
-                task.error_message = f"Failed to generate news: {str(e)}"
+                task.error_message = error_msg
                 await self.db.commit()
-            raise
+            raise ValueError(error_msg)
 
     async def run_generation_task(self, task: Task) -> None:
         """Execute the news generation task."""
@@ -74,16 +76,19 @@ class NewsGenerator:
             task.started_at = datetime.utcnow()
             await self.db.commit()
 
-            # Get active prompts
+            # Get active prompts using a text literal for interval
             prompts = await self.db.scalars(
                 select(Prompt)
                 .where(Prompt.is_active == True)
-                .where(and_(
-                    Prompt.last_run_at.is_(None) |
-                    (Prompt.last_run_at <= datetime.utcnow() - timedelta(hours=1))
-                ))
+                .where(
+                    or_(
+                        Prompt.last_run_at.is_(None),
+                        Prompt.last_run_at <= func.now() - text("interval '1 hour'")
+                    )
+                )
             )
             prompts = prompts.all()
+
 
             if not prompts:
                 logger.info("No prompts to process")
@@ -93,6 +98,10 @@ class NewsGenerator:
                 )
                 await self.db.commit()
                 return
+
+            # Initialize services if needed
+            if not self.content_processor:
+                await self.initialize_services()
 
             # Process prompts
             results = {
@@ -107,24 +116,26 @@ class NewsGenerator:
                     if article:
                         results["successful"].append(str(article.id))
                         
-                        # Update prompt's last run time
-                        prompt.last_run_at = datetime.utcnow()
+                        # Update prompt's last run time using PostgreSQL's current time
+                        prompt.last_run_at = func.now()
                         await self.db.commit()
                 except Exception as e:
-                    logger.error(f"Failed to process prompt {prompt.id}: {str(e)}")
+                    error_msg = f"Error generating news for prompt {prompt.id}: {str(e)}"
+                    logger.error(error_msg)
                     results["failed"].append({
                         "prompt_id": str(prompt.id),
-                        "error": str(e)
+                        "error": error_msg
                     })
 
             # Update task completion
+            completion_time = datetime.utcnow()
             task.update_status(
                 TaskStatus.COMPLETED,
                 result={
                     "successful_count": len(results["successful"]),
                     "failed_count": len(results["failed"]),
                     "total_prompts": len(prompts),
-                    "completion_time": datetime.utcnow().isoformat(),
+                    "completion_time": completion_time.isoformat(),
                     "details": results
                 }
             )
@@ -140,10 +151,10 @@ class NewsGenerator:
     async def cleanup_old_articles(self, days: int = 30) -> None:
         """Clean up old articles to prevent database bloat."""
         try:
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
+            # Use PostgreSQL's interval for date comparison
             old_articles = await self.db.scalars(
                 select(NewsArticle)
-                .where(NewsArticle.created_at < cutoff_date)
+                .where(NewsArticle.created_at <= func.now() - func.interval(f'{days} days'))
             )
             
             for article in old_articles:
