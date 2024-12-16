@@ -1,9 +1,12 @@
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
 import { Providers } from '@/providers';
 import './globals.css';
+import { Source_Sans_3 } from 'next/font/google';
 
-const inter = Inter({ subsets: ['latin'] });
+const sourceSans = Source_Sans_3({ 
+  subsets: ['latin'],
+  variable: '--font-source-sans',
+});
 
 export const metadata: Metadata = {
   title: 'WhatsNews AI - AI-Powered News Aggregator',
@@ -16,8 +19,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body className={inter.className}>
+    <html lang="en" className={sourceSans.variable}>
+      <body className={sourceSans.className}>
         <Providers>{children}</Providers>
       </body>
     </html>
