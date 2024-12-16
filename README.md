@@ -1,6 +1,6 @@
-# WhatsNews 2.0
+# WhatsNew
 
-WhatsNews is an open-source AI-powered news summarization platform that automatically aggregates, summarizes, and presents news from various RSS sources. Built with FastAPI and Python, it supports multiple LLM providers and can generate AI images for news stories.
+WhatsNew is an open-source AI-powered news summarization platform that automatically aggregates, summarizes, and presents news from various RSS sources. Built with FastAPI and Python, it supports multiple LLM providers and can generate AI images for news stories.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
