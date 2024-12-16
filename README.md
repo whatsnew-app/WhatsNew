@@ -1,4 +1,4 @@
-# WhatsNew
+# WhatsNew!
 
 WhatsNew is an open-source AI-powered news summarization platform that automatically aggregates, summarizes, and presents news from various RSS sources. Built with FastAPI and Python, it supports multiple LLM providers and can generate AI images for news stories.
 
