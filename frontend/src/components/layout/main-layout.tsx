@@ -1,15 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { useAuth } from '@/hooks/use-auth';
+import { useRouter } from 'next/navigation';
+import { useAuth } from '@/providers/auth-provider';
 import { Button } from '@/components/ui/button';
 import { DatePicker } from '@/components/ui/date-picker';
 import Link from 'next/link';
-import { LogOut, Settings, User } from 'lucide-react';
-
-
-
-
+import { LogOut, Settings, User, Shield } from 'lucide-react';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -31,17 +28,9 @@ export function MainLayout({ children }: MainLayoutProps) {
           </span>
         </div>
 
-        {/* Date Picker */}
-        <div className="p-4">
-          <DatePicker
-            date={selectedDate}
-            onChange={setSelectedDate}
-          />
-        </div>
-
         {/* Navigation */}
         <nav className="mt-4">
-          <Link href="/politics" className="block px-4 py-2 hover:bg-gray-50">
+          <Link href="/" className="block px-4 py-2 hover:bg-gray-50">
             Politics
           </Link>
           <Link href="/finance" className="block px-4 py-2 hover:bg-gray-50">
@@ -58,6 +47,14 @@ export function MainLayout({ children }: MainLayoutProps) {
         {/* User Section */}
         {user ? (
           <div className="absolute bottom-0 w-64 border-t">
+            {user.is_superuser && (
+              <Link href="/admin" className="block p-4 hover:bg-gray-50">
+                <div className="flex items-center space-x-2 text-blue-600">
+                  <Shield size={20} />
+                  <span>Admin Panel</span>
+                </div>
+              </Link>
+            )}
             <Link href="/prompts" className="block p-4 hover:bg-gray-50">
               <div className="flex items-center space-x-2">
                 <User size={20} />

@@ -2,22 +2,42 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { useAuth } from '@/providers/auth-provider';
+import { useRouter } from 'next/navigation';
+import { authApi } from '@/lib/api/auth';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { setCookie } from 'cookies-next';
 
 export default function LoginPage() {
-  const { login, isLoading, error } = useAuth();
+  const router = useRouter();
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
-    email: '',
-    password: ''
+    username: '', // Changed from email to username to match API expectations
+    password: '',
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError(null);
+    setIsLoading(true);
+
     try {
-      await login(formData.email, formData.password);
-    } catch (error) {
-      // Error is handled by auth provider
+      const response = await authApi.login(formData);
+      
+      // Store tokens
+      setCookie('access_token', response.access_token);
+      setCookie('refresh_token', response.refresh_token);
+      
+      // Redirect to home page
+      router.push('/');
+    } catch (err: any) {
+      console.error('Login error:', err);
+      setError(err.response?.data?.detail?.[0]?.msg || 
+               err.response?.data?.detail || 
+               'Failed to login. Please check your credentials.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -35,16 +55,16 @@ export default function LoginPage() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label htmlFor="email" className="block text-sm font-medium text-gray-700">
+              <label htmlFor="username" className="block text-sm font-medium text-gray-700">
                 Email
               </label>
-              <input
-                id="email"
+              <Input
+                id="username"
                 type="email"
                 required
-                className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2"
-                value={formData.email}
-                onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
+                className="mt-1"
+                value={formData.username}
+                onChange={(e) => setFormData(prev => ({ ...prev, username: e.target.value }))}
               />
             </div>
 
@@ -52,11 +72,11 @@ export default function LoginPage() {
               <label htmlFor="password" className="block text-sm font-medium text-gray-700">
                 Password
               </label>
-              <input
+              <Input
                 id="password"
                 type="password"
                 required
-                className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2"
+                className="mt-1"
                 value={formData.password}
                 onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))}
               />

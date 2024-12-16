@@ -1,13 +1,22 @@
 import apiClient from './client';
-import type { LoginCredentials, RegisterCredentials, AuthTokens, User } from '@/types/auth';
+import type { LoginCredentials, AuthTokens, User } from '@/types/auth';
 
 export const authApi = {
   async login(credentials: LoginCredentials): Promise<AuthTokens> {
-    const response = await apiClient.post('/auth/login', credentials);
+    // Create FormData object
+    const formData = new URLSearchParams();
+    formData.append('username', credentials.username);
+    formData.append('password', credentials.password);
+
+    const response = await apiClient.post('/auth/login', formData, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+    });
     return response.data;
   },
 
-  async register(data: RegisterCredentials): Promise<User> {
+  async register(data: { email: string; password: string; full_name?: string }): Promise<User> {
     const response = await apiClient.post('/auth/register', data);
     return response.data;
   },
@@ -16,14 +25,4 @@ export const authApi = {
     const response = await apiClient.get('/auth/me');
     return response.data;
   },
-
-  async updateProfile(data: Partial<User>): Promise<User> {
-    const response = await apiClient.put('/auth/update', data);
-    return response.data;
-  },
-
-  async refreshToken(refreshToken: string): Promise<AuthTokens> {
-    const response = await apiClient.post('/auth/refresh', { refresh_token: refreshToken });
-    return response.data;
-  }
 };
