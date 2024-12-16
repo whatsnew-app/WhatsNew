@@ -3,7 +3,7 @@
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_serializer
 from enum import Enum
 
 class NewsArticleBase(BaseModel):
@@ -36,6 +36,14 @@ class NewsArticleInDBBase(NewsArticleBase):
 
     model_config = ConfigDict(from_attributes=True)
 
+    @field_serializer('id', 'prompt_id')
+    def serialize_uuid(self, uuid: UUID, _info):
+        return str(uuid)
+
+    @field_serializer('published_date', 'created_at', 'updated_at')
+    def serialize_datetime(self, dt: datetime, _info):
+        return dt.isoformat()
+
 class NewsArticle(NewsArticleInDBBase):
     """Schema for news article responses."""
     pass
@@ -60,6 +68,10 @@ class NewsDateResponse(BaseModel):
     private_news: List[NewsArticleResponse]
     total_count: int
 
+    @field_serializer('date')
+    def serialize_datetime(self, dt: datetime, _info):
+        return dt.isoformat()
+
 class NewsStats(BaseModel):
     """Schema for news statistics."""
     total_articles: int
@@ -75,6 +87,18 @@ class NewsFilter(BaseModel):
     prompt_types: Optional[List[str]]
     prompt_ids: Optional[List[UUID]]
     search_term: Optional[str]
+
+    @field_serializer('prompt_ids')
+    def serialize_uuids(self, prompt_ids: Optional[List[UUID]], _info):
+        if prompt_ids is None:
+            return None
+        return [str(uuid) for uuid in prompt_ids]
+
+    @field_serializer('date_from', 'date_to')
+    def serialize_datetime(self, dt: Optional[datetime], _info):
+        if dt is None:
+            return None
+        return dt.isoformat()
 
 class NewsInDB(NewsArticleInDBBase):
     """Schema for news article in database."""

@@ -25,22 +25,40 @@ class NewsGenerator:
 
     async def initialize_services(self):
         """Initialize required services."""
-        # Get default LLM config
-        llm_config = await self.db.scalar(
-            select(LLMConfig).where(LLMConfig.is_default == True)
+        # First, get all configs to debug
+        all_configs_result = await self.db.execute(select(LLMConfig))
+        all_configs = all_configs_result.scalars().all()
+        
+        print("\n=== All LLM configs ===")  # Using print for debugging
+        for config in all_configs:
+            print(f"ID: {config.id}")
+            print(f"Name: {config.name}")
+            print(f"is_default: {config.is_default}")
+            print(f"is_default type: {type(config.is_default)}")
+            print("---")
+
+        # Try to get default config
+        result = await self.db.execute(
+            select(LLMConfig).filter(LLMConfig.is_default == True)  # Changed to filter()
         )
+        llm_config = result.scalar_one_or_none()
+        
         if not llm_config:
-            raise ValueError("No default LLM configuration found")
+            configs_str = "\n".join([f"{c.id}: {c.is_default} ({type(c.is_default)})" for c in all_configs])
+            print(f"\nNo default config found. Available configs:\n{configs_str}")  # Debug print
+            raise ValueError(f"No default LLM configuration found. Available configs:\n{configs_str}")
+
+        print(f"\nSelected default config: {llm_config.id}")  # Debug print
 
         # Get default image config
-        image_config = await self.db.scalar(
-            select(ImageConfig).where(ImageConfig.is_default == True)
+        result = await self.db.execute(
+            select(ImageConfig)
+            .filter(ImageConfig.is_default == True)
         )
+        image_config = result.scalar_one_or_none()
         if not image_config:
             raise ValueError("No default image configuration found")
 
-        logger.info(f"Using LLM config: {llm_config.id} with API key: {llm_config.api_key[:8]}...")
-        
         # Initialize services
         llm_service = LLMService(llm_config)
         image_service = ImageService(image_config)

@@ -1,7 +1,7 @@
 # app/services/llm_service.py
 
 from typing import Dict, List, Optional, Any
-import openai
+from openai import AsyncOpenAI  # Changed to AsyncOpenAI
 import anthropic
 import httpx
 import json
@@ -18,18 +18,17 @@ class LLMService:
     def __init__(self, config: LLMConfig):
         logger.info(f"Initializing LLM service with config id: {config.id}")
         self.config = config
-        
-        # Initialize OpenAI client
-        self.client = openai.Client(
-            api_key=config.api_key,
-            base_url=config.endpoint_url
-        )
+        self.client = None
+        self._setup_client()
 
     def _setup_client(self):
         """Initialize the appropriate LLM client based on provider"""
         try:
             if self.config.provider == LLMProvider.OPENAI:
-                self.client = openai.Client(api_key=self.config.api_key)
+                self.client = AsyncOpenAI(
+                    api_key=self.config.api_key,
+                    base_url=self.config.endpoint_url
+                )
             elif self.config.provider == LLMProvider.ANTHROPIC:
                 self.client = anthropic.Anthropic(api_key=self.config.api_key)
             elif self.config.provider == LLMProvider.CUSTOM:
@@ -134,26 +133,33 @@ class LLMService:
         max_tokens: Optional[int] = None
     ) -> Dict[str, Any]:
         """Generate content using OpenAI"""
-        response = await self.client.chat.completions.create(
-            model=self.config.model_name,
-            messages=[
-                {"role": "system", "content": "You are a professional news writer and analyst."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=max_tokens or self.config.parameters.get("max_tokens", 2000),
-            temperature=self.config.parameters.get("temperature", 0.7),
-            presence_penalty=self.config.parameters.get("presence_penalty", 0.0),
-            frequency_penalty=self.config.parameters.get("frequency_penalty", 0.0),
-        )
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.config.model_name,
+                messages=[
+                    {"role": "system", "content": "You are a professional news writer and analyst."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=max_tokens or self.config.parameters.get("max_tokens", 2000),
+                temperature=self.config.parameters.get("temperature", 0.7),
+                presence_penalty=self.config.parameters.get("presence_penalty", 0.0),
+                frequency_penalty=self.config.parameters.get("frequency_penalty", 0.0),
+            )
 
-        content = response.choices[0].message.content
-        return self._parse_llm_response(content, {
-            "model": self.config.model_name,
-            "tokens": response.usage.total_tokens,
-            "prompt_tokens": response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
-            "provider": "openai"
-        })
+            content = response.choices[0].message.content
+            return self._parse_llm_response(content, {
+                "model": self.config.model_name,
+                "tokens": response.usage.total_tokens,
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "provider": "openai"
+            })
+        except Exception as e:
+            logger.error(f"OpenAI API error: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"OpenAI API error: {str(e)}"
+            )
 
     async def _generate_with_anthropic(
         self,
