@@ -23,6 +23,10 @@ WhatsNews is an open-source AI-powered news summarization platform that automati
 - **REST API**: Well-documented FastAPI backend
 - **Real-time Updates**: WebSocket support for instant news updates
 
+### Future Plan
+- ** Other news sources like APIs
+- ** More templates for news reporting and presentation
+
 ## 🛠 Tech Stack
 
 - **Backend**: FastAPI, Python 3.9+
