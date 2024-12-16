@@ -28,6 +28,9 @@ WhatsNew is an open-source AI-powered news summarization platform that automatic
 ### Future Plan
 - **Other news sources like APIs**
 - **More templates for news reporting and presentation**
+- **Prompt Lists**
+- **User Profiles**
+- **Prompt & Prompt List subscriptions**
 
 ## 🛠 Tech Stack
 
