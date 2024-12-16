@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
 from app.api.deps import get_db, get_current_active_user
+from app.api.deps import get_current_user 
 from app.models.news import NewsArticle
 from app.models.prompt import Prompt, PromptType
 from app.models.user import User
@@ -21,43 +22,39 @@ router = APIRouter()
 
 @router.get("/my", response_model=NewsArticleList)
 async def get_my_news(
+    current_user: User = Depends(get_current_user),
     skip: int = 0,
     limit: int = 20,
-    date_filter: date | None = None,
-    prompt_id: UUID | None = None,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    db: AsyncSession = Depends(get_db)
 ) -> NewsArticleList:
-    """Get news articles from user's prompts."""
-    # Build base query
-    base_query = (
-        select(NewsArticle)
+    result = await db.execute(
+        select(NewsArticle, Prompt)
+        .join(Prompt, NewsArticle.prompt_id == Prompt.id)
+        .where(Prompt.user_id == current_user.id)
+        .order_by(NewsArticle.published_date.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    
+    articles = []
+    for news, prompt in result.all():
+        article_response = NewsArticleResponse(
+            **news.__dict__,
+            prompt_type=prompt.type,
+            prompt_name=prompt.name
+        )
+        articles.append(article_response)
+
+    total = await db.scalar(
+        select(func.count())
+        .select_from(NewsArticle)
         .join(Prompt)
         .where(Prompt.user_id == current_user.id)
     )
-    
-    if date_filter:
-        base_query = base_query.where(NewsArticle.published_date.cast(date) == date_filter)
-    if prompt_id:
-        base_query = base_query.where(NewsArticle.prompt_id == prompt_id)
-    
-    # Get total count
-    count_query = select(func.count()).select_from(NewsArticle).join(Prompt).where(Prompt.user_id == current_user.id)
-    if date_filter:
-        count_query = count_query.where(NewsArticle.published_date.cast(date) == date_filter)
-    if prompt_id:
-        count_query = count_query.where(NewsArticle.prompt_id == prompt_id)
-    
-    total = await db.scalar(count_query)
-    
-    # Add pagination
-    query = base_query.offset(skip).limit(limit)
-    result = await db.execute(query)
-    articles = result.scalars().all()
-    
+
     return NewsArticleList(
         items=articles,
-        total=total,
+        total=total or 0,
         skip=skip,
         limit=limit
     )

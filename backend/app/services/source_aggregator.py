@@ -1,66 +1,63 @@
-from typing import List, Dict
-from datetime import datetime, timedelta
-from fastapi import HTTPException
-from app.services.rss_service import RSSService
+# app/services/source_aggregator.py
+
+from typing import List, Dict, Any
+import logging
+from datetime import datetime
+import pytz
+from app.services.rss_processor import RSSProcessor
+
+logger = logging.getLogger(__name__)
 
 class SourceAggregator:
     def __init__(self):
-        self.rss_service = RSSService()
+        self.rss_processor = RSSProcessor()
 
     async def aggregate_sources(
         self,
-        sources: List[str],
-        hours_back: int = 24
-    ) -> List[Dict]:
-        """Aggregate content from multiple RSS sources"""
-        all_articles = []
-        cutoff_time = datetime.utcnow().replace(tzinfo=None)  # Ensure naive datetime
-        cutoff_time = cutoff_time - timedelta(hours=hours_back)
-
-        async with self.rss_service as service:
-            for source_url in sources:
-                try:
-                    articles = await service.fetch_feed(source_url)
-                    
-                    # Filter articles by date and fetch full content
-                    for article in articles:
-                        pub_date = article['published']
-                        if pub_date:
-                            # Convert to naive datetime if it has timezone
-                            if pub_date.tzinfo:
-                                pub_date = pub_date.astimezone().replace(tzinfo=None)
-                            
-                            if pub_date > cutoff_time:
-                                # Fetch full content if summary is too short
-                                if len(article['content']) < 500:
-                                    article['content'] = await service.fetch_content(
-                                        article['link']
-                                    )
-                                all_articles.append(article)
-
-                except HTTPException as e:
-                    # Log error but continue with other sources
-                    print(f"Error processing {source_url}: {str(e)}")
-                    continue
-
-        return self._deduplicate_articles(all_articles)
-
-    def _deduplicate_articles(self, articles: List[Dict]) -> List[Dict]:
-        """Remove duplicate articles based on title similarity"""
-        unique_articles = {}
-        
-        for article in articles:
-            title_key = self._normalize_title(article['title'])
+        news_sources: List[str]
+    ) -> List[Dict[str, Any]]:
+        """Aggregate content from multiple news sources."""
+        try:
+            # Process RSS feeds
+            aggregated_content = await self.rss_processor.process_feeds(
+                feed_urls=news_sources
+            )
             
-            if title_key not in unique_articles:
-                unique_articles[title_key] = article
-            else:
-                # Keep the longer content version
-                if len(article['content']) > len(unique_articles[title_key]['content']):
-                    unique_articles[title_key] = article
+            if not aggregated_content.articles:
+                logger.warning("No articles found from provided sources")
+                return []
 
-        return list(unique_articles.values())
+            # Log processing results
+            logger.info(
+                f"Processed {len(aggregated_content.articles)} articles from "
+                f"{len(aggregated_content.sources)} sources"
+            )
+            
+            if aggregated_content.failed_sources:
+                logger.warning(
+                    f"Failed to process {len(aggregated_content.failed_sources)} "
+                    f"sources: {aggregated_content.failed_sources}"
+                )
 
-    def _normalize_title(self, title: str) -> str:
-        """Normalize title for comparison"""
-        return ''.join(c.lower() for c in title if c.isalnum())
+            # Format articles for LLM processing
+            formatted_articles = []
+            for article in aggregated_content.articles:
+                formatted_articles.append({
+                    'title': article['title'],
+                    'content': article['content'],
+                    'link': article['source_url'],
+                    'published': article['published'],
+                    'source': article['source_feed']
+                })
+
+            return formatted_articles
+
+        except Exception as e:
+            logger.error(f"Error aggregating sources: {str(e)}")
+            raise
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.rss_processor.close()

@@ -1,7 +1,8 @@
 # app/services/llm_service.py
 
 from typing import Dict, List, Optional, Any
-from openai import AsyncOpenAI  # Changed to AsyncOpenAI
+import openai
+from openai import AsyncOpenAI
 import anthropic
 import httpx
 import json
@@ -44,6 +45,34 @@ class LLMService:
                 detail=f"Failed to initialize LLM service: {str(e)}"
             )
 
+    def _prepare_articles_context(self, articles: List[Dict]) -> str:
+        """Prepare articles context for LLM prompt."""
+        context_parts = []
+        max_length = self.config.parameters.get("max_context_length", 3000)
+        current_length = 0
+
+        for article in sorted(articles, key=lambda x: x.get('published', ''), reverse=True):
+            article_text = self._format_article_text(article)
+            
+            # Check if adding this article would exceed max length
+            if current_length + len(article_text) > max_length:
+                break
+                
+            context_parts.append(article_text)
+            current_length += len(article_text)
+        
+        return "\n\n".join(context_parts)
+
+    def _format_article_text(self, article: Dict[str, Any]) -> str:
+        """Format a single article for context."""
+        return (
+            f"Title: {article.get('title', '')}\n"
+            f"Source: {article.get('link', article.get('source_url', ''))}\n"
+            f"Date: {article.get('published', '')}\n"
+            f"Content: {article.get('content', '')}\n"
+            "---"
+        )
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10)
@@ -58,29 +87,68 @@ class LLMService:
         """Generate content using the configured LLM with retry logic"""
         try:
             # Prepare input for the LLM
-            context = self._prepare_context(articles)
-            full_prompt = self._prepare_prompt(context, prompt, template)
+            articles_context = self._prepare_articles_context(articles)
+            logger.info(f"Prepared context from {len(articles)} articles")
             
-            # Validate input length
-            if len(full_prompt) > self.config.parameters.get("max_input_length", 4000):
-                context = self._truncate_context(context)
-                full_prompt = self._prepare_prompt(context, prompt, template)
+            # Create system message with strict formatting instructions
+            system_message = (
+                "You are an expert journalist and news analyst. Your response MUST follow this exact format:\n\n"
+                "=== Title ===\n"
+                "<Write the headline here>\n\n"
+                "=== Content ===\n"
+                "<Write the main content here>\n\n"
+                "=== Summary ===\n"
+                "<Write a one-paragraph summary here>\n\n"
+                "=== Image Prompt ===\n"
+                "<Write the image generation prompt here>\n\n"
+                "Rules:\n"
+                "1. Include ALL four sections with exact headers as shown above\n"
+                "2. Each section must be non-empty\n"
+                "3. The Title must be clear and engaging\n"
+                "4. The Content must use bullet points for clarity\n"
+                "5. The Summary must be exactly one paragraph\n"
+                "6. The Image Prompt must describe a specific image"
+            )
+            
+            # Format the full prompt using template
+            full_prompt = template.format(
+                context=articles_context,
+                prompt=prompt,
+                current_date=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+            )
+
+            logger.info("Formatting complete. Beginning content generation.")
 
             # Generate content using appropriate provider
             start_time = datetime.utcnow()
             
             if self.config.provider == LLMProvider.OPENAI:
-                result = await self._generate_with_openai(full_prompt, max_tokens)
+                result = await self._generate_with_openai(
+                    system_message,
+                    full_prompt,
+                    max_tokens
+                )
             elif self.config.provider == LLMProvider.ANTHROPIC:
-                result = await self._generate_with_anthropic(full_prompt, max_tokens)
+                result = await self._generate_with_anthropic(
+                    system_message,
+                    full_prompt,
+                    max_tokens
+                )
             elif self.config.provider == LLMProvider.CUSTOM:
-                result = await self._generate_with_custom(full_prompt, max_tokens)
+                result = await self._generate_with_custom(
+                    system_message,
+                    full_prompt,
+                    max_tokens
+                )
             
             generation_time = (datetime.utcnow() - start_time).total_seconds()
+            logger.info(f"Content generation completed in {generation_time:.2f} seconds")
             
             # Add performance metrics
-            result["metadata"]["generation_time"] = generation_time
-            result["metadata"]["prompt_length"] = len(full_prompt)
+            if isinstance(result, dict) and "metadata" in result:
+                result["metadata"]["generation_time"] = generation_time
+                result["metadata"]["prompt_length"] = len(full_prompt)
+                result["metadata"]["article_count"] = len(articles)
             
             return result
 
@@ -91,53 +159,22 @@ class LLMService:
                 detail=f"Content generation failed: {str(e)}"
             )
 
-    def _prepare_context(self, articles: List[Dict]) -> str:
-        """Prepare context from articles for the LLM"""
-        context_parts = []
-        total_length = 0
-        max_length = self.config.parameters.get("max_context_length", 3000)
-        
-        for article in sorted(articles, key=lambda x: x.get('published', datetime.min), reverse=True):
-            article_text = (
-                f"Title: {article['title']}\n"
-                f"Source: {article['source_url']}\n"
-                f"Content: {article['content']}\n"
-                f"Published: {article.get('published', 'Unknown')}\n"
-                "---"
-            )
-            
-            if total_length + len(article_text) > max_length:
-                break
-                
-            context_parts.append(article_text)
-            total_length += len(article_text)
-        
-        return "\n".join(context_parts)
-
-    def _prepare_prompt(
-        self,
-        context: str,
-        prompt: str,
-        template: str
-    ) -> str:
-        """Prepare the full prompt for the LLM"""
-        return template.format(
-            context=context,
-            prompt=prompt,
-            current_date=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-        )
-
     async def _generate_with_openai(
         self,
+        system_message: str,
         prompt: str,
         max_tokens: Optional[int] = None
     ) -> Dict[str, Any]:
-        """Generate content using OpenAI"""
+        """Generate content using OpenAI with enhanced logging"""
         try:
+            logger.info("Sending request to OpenAI with:")
+            logger.info(f"System message: {system_message}")
+            logger.info(f"Prompt preview: {prompt[:200]}...")
+            
             response = await self.client.chat.completions.create(
                 model=self.config.model_name,
                 messages=[
-                    {"role": "system", "content": "You are a professional news writer and analyst."},
+                    {"role": "system", "content": system_message},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=max_tokens or self.config.parameters.get("max_tokens", 2000),
@@ -147,6 +184,19 @@ class LLMService:
             )
 
             content = response.choices[0].message.content
+            logger.info("Received response from OpenAI:")
+            logger.info(f"Raw response: {content}")
+            
+            # Check for section markers before parsing
+            if "=== Title ===" not in content:
+                logger.error("Response is missing Title section marker")
+            if "=== Content ===" not in content:
+                logger.error("Response is missing Content section marker")
+            if "=== Summary ===" not in content:
+                logger.error("Response is missing Summary section marker")
+            if "=== Image Prompt ===" not in content:
+                logger.error("Response is missing Image Prompt section marker")
+
             return self._parse_llm_response(content, {
                 "model": self.config.model_name,
                 "tokens": response.usage.total_tokens,
@@ -163,18 +213,20 @@ class LLMService:
 
     async def _generate_with_anthropic(
         self,
+        system_message: str,
         prompt: str,
         max_tokens: Optional[int] = None
     ) -> Dict[str, Any]:
         """Generate content using Anthropic"""
         try:
+            logger.info("Sending request to Anthropic")
             response = await self.client.messages.create(
                 model=self.config.model_name,
                 max_tokens=max_tokens or self.config.parameters.get("max_tokens", 2000),
                 messages=[
                     {
                         "role": "user",
-                        "content": prompt
+                        "content": f"{system_message}\n\n{prompt}"
                     }
                 ],
                 temperature=self.config.parameters.get("temperature", 0.7)
@@ -182,6 +234,7 @@ class LLMService:
 
             # Extract content from the response
             content = response.content[0].text
+            logger.info(f"Received response from Anthropic: {content[:200]}...")
             
             return self._parse_llm_response(content, {
                 "model": self.config.model_name,
@@ -199,14 +252,17 @@ class LLMService:
 
     async def _generate_with_custom(
         self,
+        system_message: str,
         prompt: str,
         max_tokens: Optional[int] = None
     ) -> Dict[str, Any]:
         """Generate content using custom endpoint"""
         try:
+            logger.info("Sending request to custom endpoint")
             response = await self.client.post(
                 "/generate",
                 json={
+                    "system_message": system_message,
                     "prompt": prompt,
                     "max_tokens": max_tokens or self.config.parameters.get("max_tokens", 2000),
                     **self.config.parameters
@@ -220,6 +276,8 @@ class LLMService:
                 )
 
             result = response.json()
+            logger.info(f"Received response from custom endpoint: {result.get('content', '')[:200]}...")
+            
             return self._parse_llm_response(result["content"], {
                 "model": self.config.model_name,
                 "provider": "custom",
@@ -238,40 +296,75 @@ class LLMService:
         content: str,
         metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Parse the LLM response into structured format"""
+        """Parse LLM response with enhanced error reporting"""
         try:
-            # Split content into sections using the separator
-            sections = content.split("===")
+            # Log the exact content being parsed
+            logger.info("Starting to parse content:")
+            logger.info(f"Content length: {len(content)}")
+            logger.info(f"Content preview: {content[:200]}...")
             
-            if len(sections) < 4:
-                logger.warning("Invalid response format from LLM, attempting to parse content")
-                # Fallback parsing logic for malformed responses
-                return self._fallback_parse_response(content, metadata)
+            # First check if all required sections exist
+            required_sections = [
+                "=== Title ===",
+                "=== Content ===",
+                "=== Summary ===",
+                "=== Image Prompt ==="
+            ]
+            
+            missing_sections = [
+                section for section in required_sections 
+                if section not in content
+            ]
+            
+            if missing_sections:
+                error_msg = f"Missing sections: {', '.join(missing_sections)}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
 
-            # Extract sections
-            title = sections[0].strip()
-            main_content = sections[1].strip()
-            summary = sections[2].strip()
-            image_prompt = sections[3].strip()
+            # Split content into sections using regex
+            import re
+            sections = re.split(r'===\s*([^=]+?)\s*===', content)
+            
+            # Remove empty strings and organize sections
+            sections = [s.strip() for s in sections if s.strip()]
+            section_dict = {}
+            
+            # Log the sections found
+            logger.info(f"Found {len(sections)} sections after splitting")
+            
+            # Pair section headers with their content
+            for i in range(0, len(sections)-1, 2):
+                section_name = sections[i].lower()
+                section_content = sections[i+1]
+                section_dict[section_name] = section_content
+                logger.info(f"Parsed section: {section_name}")
+                logger.info(f"Content preview: {section_content[:50]}...")
 
-            # Validate sections
-            if not title or not main_content:
-                raise ValueError("Missing required content sections")
-
-            return {
-                "title": title,
-                "content": main_content,
-                "summary": summary if summary else main_content[:200] + "...",
-                "image_prompt": image_prompt,
+            # Construct the response
+            result = {
+                "title": section_dict.get('title', ''),
+                "content": section_dict.get('content', ''),
+                "summary": section_dict.get('summary', ''),
+                "image_prompt": section_dict.get('image prompt', ''),
                 "metadata": {
                     **metadata,
                     "timestamp": datetime.utcnow().isoformat(),
-                    "sections_found": len(sections)
+                    "sections_found": len(section_dict)
                 }
             }
 
+            # Validate the result
+            if not all(result.values()):
+                missing = [k for k, v in result.items() if not v and k != 'metadata']
+                error_msg = f"Missing content for sections: {', '.join(missing)}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
+            return result
+
         except Exception as e:
             logger.error(f"Error parsing LLM response: {str(e)}")
+            logger.error(f"Raw content causing error: {content}")
             raise ValueError(f"Failed to parse LLM response: {str(e)}")
 
     def _fallback_parse_response(
@@ -280,6 +373,7 @@ class LLMService:
         metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Fallback parsing for malformed responses"""
+        logger.info("Attempting fallback parsing for malformed response")
         # Try to extract title from first line
         lines = content.split('\n')
         title = lines[0].strip()
@@ -293,6 +387,7 @@ class LLMService:
         # Create a basic image prompt from title
         image_prompt = f"Create a news-style image representing: {title}"
         
+        logger.info("Fallback parsing completed")
         return {
             "title": title,
             "content": main_content,
@@ -305,55 +400,38 @@ class LLMService:
             }
         }
 
-    def _truncate_context(self, context: str) -> str:
-        """Truncate context to fit within token limits"""
-        max_length = self.config.parameters.get("max_context_length", 3000)
-        if len(context) <= max_length:
-            return context
-            
-        # Split into articles and reconstruct until we hit the limit
-        articles = context.split("---")
-        truncated_articles = []
-        current_length = 0
-        
-        for article in articles:
-            if current_length + len(article) + 3 > max_length:  # +3 for "---"
-                break
-            truncated_articles.append(article.strip())
-            current_length += len(article) + 3
-            
-        return "---".join(truncated_articles)
-
     async def validate_api_key(self) -> bool:
-        """Validate the API key with the provider"""
-        try:
-            if self.config.provider == LLMProvider.OPENAI:
-                # Test with a minimal completion request
-                await self.client.chat.completions.create(
-                    model=self.config.model_name,
-                    messages=[{"role": "user", "content": "Test"}],
-                    max_tokens=5
-                )
-            elif self.config.provider == LLMProvider.ANTHROPIC:
-                await self.client.messages.create(
-                    model=self.config.model_name,
-                    max_tokens=5,
-                    messages=[{"role": "user", "content": "Test"}]
-                )
-            elif self.config.provider == LLMProvider.CUSTOM:
-                response = await self.client.get("/health")
-                if response.status_code != 200:
-                    return False
-                    
-            return True
-            
-        except Exception as e:
-            logger.error(f"API key validation failed: {str(e)}")
-            return False
+            """Validate the API key with the provider"""
+            try:
+                if self.config.provider == LLMProvider.OPENAI:
+                    # Test with a minimal completion request
+                    await self.client.chat.completions.create(
+                        model=self.config.model_name,
+                        messages=[{"role": "user", "content": "Test"}],
+                        max_tokens=5
+                    )
+                elif self.config.provider == LLMProvider.ANTHROPIC:
+                    await self.client.messages.create(
+                        model=self.config.model_name,
+                        max_tokens=5,
+                        messages=[{"role": "user", "content": "Test"}]
+                    )
+                elif self.config.provider == LLMProvider.CUSTOM:
+                    response = await self.client.get("/health")
+                    if response.status_code != 200:
+                        return False
+                        
+                return True
+                
+            except Exception as e:
+                logger.error(f"API key validation failed: {str(e)}")
+                return False
 
     async def __aenter__(self):
-        return self
+            """Async context manager entry"""
+            return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.config.provider == LLMProvider.CUSTOM:
-            await self.client.aclose()
+            """Async context manager exit"""
+            if self.config.provider == LLMProvider.CUSTOM:
+                await self.client.aclose()
