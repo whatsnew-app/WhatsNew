@@ -1,85 +1,109 @@
-'use client';
+"use client"
 
-import React from 'react';
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { cn } from '@/lib/utils';
-import { useAuth } from '@/providers/auth-provider';
-import { Button } from '@/components/ui/button';
-import { DatePicker } from '@/components/ui/date-picker';
-import { LogOut, Settings, User, Home, BookOpen, Briefcase, Flask, Rocket } from 'lucide-react';
+import { useEffect, useState } from "react"
+import { usePathname } from "next/navigation"
+import Link from "next/link"
+import { format } from "date-fns"
+import { CalendarIcon, Settings, LogOut } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
+import { useAuthStore } from "@/stores/auth-store"
+import api from "@/lib/api"
 
 interface SidebarProps {
-  onDateChange?: (date: Date | undefined) => void;
-  selectedDate?: Date;
+  className?: string
 }
 
-export function Sidebar({ onDateChange, selectedDate }: SidebarProps) {
-  const pathname = usePathname();
-  const { user, logout } = useAuth();
+interface Prompt {
+  id: string
+  name: string
+  type: "public" | "private" | "internal"
+}
 
-  const navigationItems = [
-    { name: 'Home', href: '/', icon: Home },
-    { name: 'Politics', href: '/politics', icon: BookOpen },
-    { name: 'Finance', href: '/finance', icon: Briefcase },
-    { name: 'Science', href: '/science', icon: Flask },
-    { name: 'Startups', href: '/startups', icon: Rocket },
-  ];
+export function Sidebar({ className }: SidebarProps) {
+  const pathname = usePathname()
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date())
+  const [prompts, setPrompts] = useState<Prompt[]>([])
+  const [isLoadingPrompts, setIsLoadingPrompts] = useState(true)
+  
+  const { user, logout } = useAuthStore()
+
+  useEffect(() => {
+    const fetchPrompts = async () => {
+      try {
+        setIsLoadingPrompts(true)
+        const response = await api.get('/api/v1/public/prompts')
+        setPrompts(response.data)
+      } catch (error) {
+        console.error('Failed to fetch prompts:', error)
+      } finally {
+        setIsLoadingPrompts(false)
+      }
+    }
+
+    fetchPrompts()
+  }, [])
+
+  const handleLogout = () => {
+    logout()
+    window.location.href = '/'
+  }
 
   return (
-    <div className="w-64 bg-white shadow-lg h-full flex flex-col">
-      {/* Brand */}
-      <div className="p-4 flex items-center space-x-2">
-        <h1 className="text-xl font-bold">WhatsNews AI</h1>
-        <span className="px-2 py-1 bg-purple-100 text-purple-800 text-sm rounded">
-          {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-        </span>
+    <aside className={cn(
+      "flex h-screen w-72 flex-col bg-background",
+      className
+    )}>
+      {/* Logo */}
+      <div className="border-b px-6 py-4">
+        <Link href="/" className="flex items-center space-x-2">
+          <h1 className="text-xl font-bold">WhatsNews AI</h1>
+        </Link>
       </div>
 
-      {/* Date Picker */}
-      <div className="p-4">
-        <DatePicker
-          date={selectedDate}
-          onChange={onDateChange}
-        />
+      {/* Date selection */}
+      <div className="border-b px-6 py-4">
+        <Button
+          variant="outline"
+          className="w-full justify-start text-left font-normal"
+        >
+          <CalendarIcon className="mr-2 h-4 w-4" />
+          {format(selectedDate, "PPP")}
+        </Button>
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 py-4">
-        {navigationItems.map((item) => {
-          const Icon = item.icon;
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={cn(
-                "flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-50",
-                pathname === item.href && "bg-gray-100 text-blue-600"
-              )}
-            >
-              <Icon className="mr-3 h-4 w-4" />
-              {item.name}
-            </Link>
-          );
-        })}
-
-        {user && (
-          <>
-            <div className="px-4 py-2 mt-4">
-              <h3 className="text-sm font-medium text-gray-500">Private Prompts</h3>
+      {/* Prompts list */}
+      <div className="flex-1 overflow-auto px-4 py-6">
+        <nav className="flex flex-col space-y-1">
+          {isLoadingPrompts ? (
+            <div className="flex items-center justify-center py-4">
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
             </div>
-            {/* Add private prompts here */}
-          </>
-        )}
-      </nav>
+          ) : (
+            prompts.map((prompt) => (
+              <Link
+                key={prompt.id}
+                href={`/prompts/${prompt.id}`}
+                className={cn(
+                  "px-2 py-1.5 text-sm font-medium rounded-md",
+                  pathname === `/prompts/${prompt.id}`
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                )}
+              >
+                {prompt.name}
+              </Link>
+            ))
+          )}
+        </nav>
+      </div>
 
-      {/* User Section */}
-      <div className="border-t">
+      {/* Bottom actions */}
+      <div className="mt-auto border-t px-6 py-4">
         {user ? (
-          <div className="p-4 space-y-2">
+          <div className="flex flex-col space-y-2">
             <Link href="/prompts">
               <Button variant="ghost" className="w-full justify-start">
-                <User className="mr-2 h-4 w-4" />
                 My Prompts
               </Button>
             </Link>
@@ -89,28 +113,28 @@ export function Sidebar({ onDateChange, selectedDate }: SidebarProps) {
                 Settings
               </Button>
             </Link>
-            <Button
-              variant="ghost"
-              className="w-full justify-start text-red-600 hover:text-red-700 hover:bg-red-50"
-              onClick={() => logout()}
+            <Button 
+              variant="ghost" 
+              className="w-full justify-start text-destructive"
+              onClick={handleLogout}
             >
               <LogOut className="mr-2 h-4 w-4" />
               Logout
             </Button>
           </div>
         ) : (
-          <div className="p-4 space-y-2">
-            <Link href="/login">
+          <div className="flex flex-col space-y-2">
+            <Link href="/auth/login">
               <Button className="w-full">Login</Button>
             </Link>
-            <Link href="/register">
+            <Link href="/auth/signup">
               <Button variant="outline" className="w-full">
-                Register
+                Sign Up
               </Button>
             </Link>
           </div>
         )}
       </div>
-    </div>
-  );
+    </aside>
+  )
 }
