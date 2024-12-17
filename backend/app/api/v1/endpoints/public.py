@@ -1,7 +1,8 @@
 from typing import List
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from datetime import date
 
 from app.api.deps import get_db
@@ -63,11 +64,15 @@ async def get_public_prompts(
     limit: int = Query(20, ge=1, le=100)
 ):
     """Get all public prompts"""
-    prompts = await db.scalars(
+    query = (
         select(Prompt)
+        .options(selectinload(Prompt.template))  # Eager load the template relationship
         .where(Prompt.type == PromptType.PUBLIC)
         .order_by(Prompt.created_at.desc())
         .offset(skip)
         .limit(limit)
     )
-    return prompts.all()
+    
+    result = await db.execute(query)
+    prompts = result.scalars().all()
+    return prompts
