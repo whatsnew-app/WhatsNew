@@ -2,13 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { MainLayout } from '@/components/layout/main-layout';
-import { NewsList } from '@/components/news/news-list';
-import { useAuth } from '@/providers/auth-provider';
+import { NewsCard } from '@/components/news/news-card';
+import { usePublicNews } from '@/hooks/use-news';
 import type { NewsFilters } from '@/types/news';
 
 export default function HomePage() {
-  const { isAuthenticated } = useAuth();
   const [filters, setFilters] = useState<NewsFilters>({});
+  const { articles, isLoading, error } = usePublicNews(filters);
   
   const handleDateChange = (date?: Date) => {
     setFilters(prev => ({
@@ -17,18 +17,8 @@ export default function HomePage() {
     }));
   };
 
-  const handlePromptChange = (promptId?: string) => {
-    setFilters(prev => ({
-      ...prev,
-      promptId: promptId
-    }));
-  };
-
   return (
-    <MainLayout
-      onDateChange={handleDateChange}
-      onPromptChange={handlePromptChange}
-    >
+    <MainLayout onDateChange={handleDateChange}>
       <div className="max-w-5xl mx-auto">
         <header className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900">Latest News</h1>
@@ -37,7 +27,32 @@ export default function HomePage() {
           </p>
         </header>
 
-        <NewsList filters={filters} />
+        <div className="space-y-6">
+          {isLoading && (
+            <div className="flex justify-center p-4">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+            </div>
+          )}
+
+          {error && (
+            <div className="text-red-600 text-center p-4">
+              {error}
+            </div>
+          )}
+
+          {!isLoading && !error && articles?.length === 0 && (
+            <div className="text-center text-gray-500 p-4">
+              No news articles available
+            </div>
+          )}
+
+          {articles?.map((article) => (
+            <NewsCard 
+              key={article.id} 
+              article={article}
+            />
+          ))}
+        </div>
       </div>
     </MainLayout>
   );
